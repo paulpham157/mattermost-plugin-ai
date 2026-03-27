@@ -1231,6 +1231,7 @@ func (b *LLM) streamResponses(request llm.CompletionRequest, cfg llm.LanguageMod
 	// Process stream
 	var toolCalls []llm.ToolCall
 	toolCallsBuffer := make(map[string]*responsesToolCallBuffer)
+	var currentFuncCallID string // tracks the active function call for argument deltas
 
 	// Reasoning buffers
 	var reasoningBuffer strings.Builder
@@ -1367,7 +1368,9 @@ func (b *LLM) streamResponses(request llm.CompletionRequest, cfg llm.LanguageMod
 				blockStartPos = textLen
 
 			case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
-				// Tool call arguments delta
+				// Tool call arguments delta.
+				// Bifrost often does not populate resp.Item on delta events; the call ID
+				// may come from the preceding OutputItemAdded event (currentFuncCallID).
 				if resp.Item != nil && resp.Item.ResponsesToolMessage != nil {
 					tm := resp.Item.ResponsesToolMessage
 					callID := ""
@@ -1385,6 +1388,11 @@ func (b *LLM) streamResponses(request llm.CompletionRequest, cfg llm.LanguageMod
 							toolCallsBuffer[callID].arguments.WriteString(*resp.Delta)
 						}
 					}
+				} else if currentFuncCallID != "" && resp.Delta != nil {
+					if toolCallsBuffer[currentFuncCallID] == nil {
+						toolCallsBuffer[currentFuncCallID] = &responsesToolCallBuffer{id: currentFuncCallID}
+					}
+					toolCallsBuffer[currentFuncCallID].arguments.WriteString(*resp.Delta)
 				}
 
 			case schemas.ResponsesStreamResponseTypeOutputItemAdded:
@@ -1397,6 +1405,7 @@ func (b *LLM) streamResponses(request llm.CompletionRequest, cfg llm.LanguageMod
 							callID = *tm.CallID
 						}
 						if callID != "" {
+							currentFuncCallID = callID
 							if toolCallsBuffer[callID] == nil {
 								toolCallsBuffer[callID] = &responsesToolCallBuffer{id: callID}
 							}
