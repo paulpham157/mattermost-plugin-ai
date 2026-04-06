@@ -300,9 +300,10 @@ func (c *Conversations) HandleToolCall(userID string, post *model.Post, channel 
 		return fmt.Errorf("failed to update post with tool call results: %w", updateErr)
 	}
 
-	// Only continue if at least one tool call was successful
+	// Continue when the agent has any actionable tool result, including errors
+	// it may be able to recover from on the next turn.
 	if !slices.ContainsFunc(tools, func(tc llm.ToolCall) bool {
-		return tc.Status == llm.ToolCallStatusSuccess
+		return tc.Status == llm.ToolCallStatusSuccess || tc.Status == llm.ToolCallStatusError
 	}) {
 		return nil
 	}
@@ -439,21 +440,22 @@ func (c *Conversations) HandleToolResult(userID string, post *model.Post, channe
 		return fmt.Errorf("failed to update post after tool result approval: %w", updateErr)
 	}
 
-	// Do not continue streaming when no tool call succeeded (all errors/rejections).
-	// Re-invoking completeAndStreamToolResponse would cause a channel loop.
-	hasSuccessfulResult := slices.ContainsFunc(tools, func(tc llm.ToolCall) bool {
-		return tc.Status == llm.ToolCallStatusSuccess
+	// Continue when the agent has any actionable tool result, including errors
+	// it may be able to recover from on the next turn.
+	hasActionableResult := slices.ContainsFunc(tools, func(tc llm.ToolCall) bool {
+		return tc.Status == llm.ToolCallStatusSuccess || tc.Status == llm.ToolCallStatusError
 	})
-	if !hasSuccessfulResult {
+	if !hasActionableResult {
 		c.deleteToolCallKVEntries(post.Id, resultKVKey, toolCallKVKey)
 		return nil
 	}
+
+	defer c.deleteToolCallKVEntries(post.Id, resultKVKey, toolCallKVKey)
 
 	if err := c.completeAndStreamToolResponse(bot, user, channel, toolCallPostCopy, llmContext, toolsDisabled, allowToolsInChannel); err != nil {
 		return err
 	}
 
-	c.deleteToolCallKVEntries(post.Id, resultKVKey, toolCallKVKey)
 	return nil
 }
 
@@ -489,6 +491,10 @@ func (c *Conversations) completeAndStreamToolResponse(
 		OperationSubType: llm.SubTypeToolCall,
 	}
 	var opts []llm.LanguageModelOption
+	if llm.CountTrailingFailedToolCalls(completionRequest.Posts) >= llm.MaxConsecutiveToolCallFailures {
+		completionRequest.Posts = llm.EnsureToolRetryLimitSystemMessage(completionRequest.Posts)
+		toolsDisabled = true
+	}
 	if toolsDisabled {
 		opts = append(opts, llm.WithToolsDisabled())
 	}
