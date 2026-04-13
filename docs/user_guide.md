@@ -16,6 +16,7 @@ Access AI features through the right pane in one of the following ways:
 - @mention an AI bot in any channel where you have access (such as `@copilot`).
 - Use the **AI Actions** menu by hovering over the first message in any conversation thread (see [license requirements](admin_guide.md#license-requirements))
 - Use the **Ask AI** option in channels with unread messages (see [license requirements](admin_guide.md#license-requirements))
+- Use **Ask Agents about this channel** in a channel header to summarize recent activity, focus on a date range, or ask a question about the current channel. See [Channel Summaries](features/channel_summaries.md).
 
 ### Mobile
 
@@ -80,6 +81,8 @@ To summarize unread Mattermost channels:
 3. Select **Summarize new messages**. 
 
 The channel summary is generated in the Agents pane, and only you can view the summary.
+
+For more flexible channel analysis options, including **Ask Agents about this channel**, custom prompts, and date ranges, see [Channel Summaries](features/channel_summaries.md).
 
 ## Search with AI
 
