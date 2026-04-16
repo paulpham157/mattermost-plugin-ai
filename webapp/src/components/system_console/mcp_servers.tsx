@@ -352,7 +352,13 @@ const MCPServers = ({mcpConfig, onChange}: Props) => {
 
     // Tool-affecting config fingerprint (must be declared before prefetch effect)
     const configFingerprint = JSON.stringify({
-        servers: normalizedServers.map((s) => ({url: s.baseURL, enabled: s.enabled})),
+        servers: normalizedServers.map((s) => ({
+            url: s.baseURL,
+            enabled: s.enabled,
+            clientID: s.clientID || '',
+            hasClientSecret: Boolean(s.clientSecret),
+        })),
+        embeddedEnabled: mcpConfig?.embeddedServer?.enabled,
         enablePluginServer: mcpConfig?.enablePluginServer,
     });
     const prevFingerprintRef = useRef(configFingerprint);
