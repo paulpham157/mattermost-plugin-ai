@@ -6,11 +6,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mattermost/mattermost-plugin-agents/bots"
@@ -42,11 +44,12 @@ const (
 )
 
 type TestEnvironment struct {
-	api     *API
-	mockAPI *plugintest.API
-	bots    *bots.MMBots
-	config  *testConfigImpl
-	client  *pluginapi.Client
+	api        *API
+	mockAPI    *plugintest.API
+	bots       *bots.MMBots
+	config     *testConfigImpl
+	client     *pluginapi.Client
+	agentStore *mockAgentStore
 }
 
 // testConfigImpl is a minimal implementation of Config for testing
@@ -131,6 +134,108 @@ func (m *mockMCPClientManager) GetConfig() mcp.Config {
 	return m.config
 }
 
+// mockAgentStore is a minimal in-memory implementation of AgentStore for testing.
+type mockAgentStore struct {
+	agents map[string]*llm.BotConfig
+}
+
+func newMockAgentStore() *mockAgentStore {
+	return &mockAgentStore{agents: make(map[string]*llm.BotConfig)}
+}
+
+// cloneBotConfig returns a deep copy so API callers cannot mutate mock store internals via returned pointers.
+func cloneBotConfig(src *llm.BotConfig) *llm.BotConfig {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	if len(src.ChannelIDs) > 0 {
+		dst.ChannelIDs = append([]string(nil), src.ChannelIDs...)
+	}
+	if len(src.UserIDs) > 0 {
+		dst.UserIDs = append([]string(nil), src.UserIDs...)
+	}
+	if len(src.TeamIDs) > 0 {
+		dst.TeamIDs = append([]string(nil), src.TeamIDs...)
+	}
+	if len(src.AdminUserIDs) > 0 {
+		dst.AdminUserIDs = append([]string(nil), src.AdminUserIDs...)
+	}
+	if len(src.EnabledMCPTools) > 0 {
+		dst.EnabledMCPTools = append([]llm.EnabledMCPTool(nil), src.EnabledMCPTools...)
+	}
+	if len(src.EnabledNativeTools) > 0 {
+		dst.EnabledNativeTools = append([]string(nil), src.EnabledNativeTools...)
+	}
+	return &dst
+}
+
+func (m *mockAgentStore) CreateAgent(cfg *llm.BotConfig) error {
+	cfg.ID = "agen" + fmt.Sprintf("%022d", len(m.agents)+1)
+	now := time.Now().UnixMilli()
+	cfg.CreateAt = now
+	cfg.UpdateAt = now
+	m.agents[cfg.ID] = cloneBotConfig(cfg)
+	return nil
+}
+
+func (m *mockAgentStore) GetAgent(id string) (*llm.BotConfig, error) {
+	cfg, ok := m.agents[id]
+	if !ok || cfg.DeleteAt != 0 {
+		return nil, nil
+	}
+	return cloneBotConfig(cfg), nil
+}
+
+func (m *mockAgentStore) ListAgents() ([]*llm.BotConfig, error) {
+	result := make([]*llm.BotConfig, 0, len(m.agents))
+	for _, cfg := range m.agents {
+		if cfg.DeleteAt == 0 {
+			result = append(result, cloneBotConfig(cfg))
+		}
+	}
+	return result, nil
+}
+
+func (m *mockAgentStore) ListAgentsByCreator(creatorID string) ([]*llm.BotConfig, error) {
+	result := make([]*llm.BotConfig, 0)
+	for _, cfg := range m.agents {
+		if cfg.DeleteAt == 0 && cfg.CreatorID == creatorID {
+			result = append(result, cloneBotConfig(cfg))
+		}
+	}
+	return result, nil
+}
+
+func (m *mockAgentStore) CountActiveAgents() (int, error) {
+	count := 0
+	for _, cfg := range m.agents {
+		if cfg.DeleteAt == 0 {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (m *mockAgentStore) UpdateAgent(cfg *llm.BotConfig) error {
+	existing, ok := m.agents[cfg.ID]
+	if !ok || existing.DeleteAt != 0 {
+		return fmt.Errorf("agent %q not found or already deleted", cfg.ID)
+	}
+	cfg.UpdateAt = time.Now().UnixMilli()
+	m.agents[cfg.ID] = cloneBotConfig(cfg)
+	return nil
+}
+
+func (m *mockAgentStore) DeleteAgent(id string) error {
+	cfg, ok := m.agents[id]
+	if !ok || cfg.DeleteAt != 0 {
+		return fmt.Errorf("agent %q not found or already deleted", id)
+	}
+	cfg.DeleteAt = time.Now().UnixMilli()
+	return nil
+}
+
 func (e *TestEnvironment) Cleanup(t *testing.T) {
 	if e.mockAPI != nil {
 		e.mockAPI.AssertExpectations(t)
@@ -170,7 +275,7 @@ func (t *testPluginAPI) PluginHTTP(req *http.Request) *http.Response {
 // createTestBots creates a test MMBots instance for testing
 func createTestBots(mockAPI *plugintest.API, client *pluginapi.Client) *bots.MMBots {
 	licenseChecker := enterprise.NewLicenseChecker(client)
-	testBots := bots.New(mockAPI, client, licenseChecker, nil, &http.Client{}, nil)
+	testBots := bots.New(mockAPI, client, licenseChecker, nil, nil, &http.Client{}, nil)
 	return testBots
 }
 
@@ -204,15 +309,49 @@ func SetupTestEnvironment(t *testing.T) *TestEnvironment {
 
 	cfg := &testConfigImpl{}
 
-	api := New(testBots, conversationsService, nil, nil, nil, client, noopMetrics, nil, cfg, nil, nil, nil, nil, nil, nil, &mockMCPClientManager{}, nil, nil, nil, nil, nil, nil, nil)
+	agentStore := newMockAgentStore()
+	api := New(testBots, conversationsService, nil, nil, nil, client, noopMetrics, nil, cfg, nil, nil, nil, nil, nil, nil, &mockMCPClientManager{}, nil, nil, nil, agentStore, nil, nil, nil, nil, nil)
 
 	return &TestEnvironment{
-		api:     api,
-		mockAPI: mockAPI,
-		bots:    testBots,
-		config:  cfg,
-		client:  client,
+		api:        api,
+		mockAPI:    mockAPI,
+		bots:       testBots,
+		config:     cfg,
+		client:     client,
+		agentStore: agentStore,
 	}
+}
+
+func TestAIBotRequiredUsesConfiguredDefaultBot(t *testing.T) {
+	e := SetupTestEnvironment(t)
+	defer e.Cleanup(t)
+
+	defaultBot := bots.NewBot(
+		llm.BotConfig{Name: "ai", DisplayName: "AI"},
+		llm.ServiceConfig{},
+		&model.Bot{UserId: "defaultbotuserid1234567890", Username: "ai", DisplayName: "AI"},
+		nil,
+	)
+	otherBot := bots.NewBot(
+		llm.BotConfig{Name: "second", DisplayName: "Second"},
+		llm.ServiceConfig{},
+		&model.Bot{UserId: "secondbotuserid123456789", Username: "second", DisplayName: "Second"},
+		nil,
+	)
+
+	// Put the non-default bot first to verify we prefer config over slice order.
+	e.bots.SetBotsForTesting([]*bots.Bot{otherBot, defaultBot})
+
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	req := httptest.NewRequest(http.MethodPost, "/post/postid/react", nil)
+	ctx.Request = req
+
+	e.api.aiBotRequired(ctx)
+	require.False(t, ctx.IsAborted())
+
+	selectedBot := ctx.MustGet(ContextBotKey).(*bots.Bot)
+	require.Equal(t, "ai", selectedBot.GetMMBot().Username)
 }
 
 func TestPostRouter(t *testing.T) {

@@ -67,6 +67,17 @@ type ConfigStore interface {
 	SaveConfig(cfg config.Config) error
 }
 
+// AgentStore provides CRUD access to user-created agents in the database.
+type AgentStore interface {
+	CreateAgent(cfg *llm.BotConfig) error
+	GetAgent(id string) (*llm.BotConfig, error)
+	ListAgents() ([]*llm.BotConfig, error)
+	ListAgentsByCreator(creatorID string) ([]*llm.BotConfig, error)
+	CountActiveAgents() (int, error)
+	UpdateAgent(cfg *llm.BotConfig) error
+	DeleteAgent(id string) error
+}
+
 // ConfigUpdater updates the in-memory plugin configuration.
 type ConfigUpdater interface {
 	Update(cfg *config.Config)
@@ -75,6 +86,11 @@ type ConfigUpdater interface {
 // ClusterNotifier broadcasts config update events to other cluster nodes.
 type ClusterNotifier interface {
 	PublishConfigUpdate() error
+}
+
+// ClusterAgentNotifier broadcasts agent update events to other cluster nodes.
+type ClusterAgentNotifier interface {
+	PublishAgentUpdate() error
 }
 
 // API represents the HTTP API functionality for the plugin
@@ -99,8 +115,10 @@ type API struct {
 	mcpHandlers           *mcpserver.PluginMCPHandlers
 	llmUpstreamHTTPClient *http.Client
 	configStore           ConfigStore
+	agentStore            AgentStore
 	configUpdater         ConfigUpdater
 	clusterNotifier       ClusterNotifier
+	clusterAgentNotifier  ClusterAgentNotifier
 	getSearchInitError    func() string
 	customPromptsStore    *customprompts.Store
 }
@@ -126,8 +144,10 @@ func New(
 	mcpHandlers *mcpserver.PluginMCPHandlers,
 	llmUpstreamHTTPClient *http.Client,
 	configStore ConfigStore,
+	agentStore AgentStore,
 	configUpdater ConfigUpdater,
 	clusterNotifier ClusterNotifier,
+	clusterAgentNotifier ClusterAgentNotifier,
 	getSearchInitError func() string,
 	customPromptsStore *customprompts.Store,
 ) *API {
@@ -152,8 +172,10 @@ func New(
 		mcpHandlers:           mcpHandlers,
 		llmUpstreamHTTPClient: llmUpstreamHTTPClient,
 		configStore:           configStore,
+		agentStore:            agentStore,
 		configUpdater:         configUpdater,
 		clusterNotifier:       clusterNotifier,
+		clusterAgentNotifier:  clusterAgentNotifier,
 		getSearchInitError:    getSearchInitError,
 		customPromptsStore:    customPromptsStore,
 	}
@@ -211,6 +233,22 @@ func (a *API) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Reques
 	router.GET("/mcp/user-preferences", a.handleGetUserPreferences)
 	router.PUT("/mcp/user-preferences", a.handlePutUserPreferences)
 	router.DELETE("/mcp/oauth/:serverName", a.handleDeleteUserMCPOAuth)
+
+	// Agent routes — authenticated. Free-tier instances (no multi-LLM license)
+	// can CRUD up to one self-service agent; the quota is enforced inside
+	// handleCreateAgent so reads, updates, deletes, and avatar uploads remain
+	// available even after a license downgrade.
+	agentRouter := router.Group("/agents")
+	agentRouter.POST("", a.handleCreateAgent)
+	agentRouter.GET("", a.handleListAgents)
+	// Register /models/fetch before /:agentid routes so "models" is never captured as :agentid.
+	agentRouter.POST("/models/fetch", a.handleFetchModelsForService)
+	agentRouter.GET("/:agentid", a.handleGetAgent)
+	agentRouter.PUT("/:agentid", a.handleUpdateAgent)
+	agentRouter.DELETE("/:agentid", a.handleDeleteAgent)
+	agentRouter.POST("/:agentid/avatar", a.handleUploadAgentAvatar)
+
+	router.GET("/services", a.handleListServices)
 
 	// Raw search endpoint returns enriched semantic search results without LLM processing.
 	// Used by the MCP server for external search callbacks.
@@ -295,8 +333,11 @@ func (a *API) metricsMiddleware(c *gin.Context) {
 }
 
 func (a *API) aiBotRequired(c *gin.Context) {
-	// We should integreate LLM here
 	botUsername := c.Query("botUsername")
+	if botUsername == "" {
+		botUsername = a.config.GetDefaultBotName()
+	}
+
 	bot := a.bots.GetBotByUsernameOrFirst(botUsername)
 	if bot == nil {
 		c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("failed to get bot: %s", botUsername))
@@ -351,15 +392,17 @@ func (a *API) handleGetAIThreads(c *gin.Context) {
 }
 
 type AIBotInfo struct {
-	ID                 string                 `json:"id"`
-	DisplayName        string                 `json:"displayName"`
-	Username           string                 `json:"username"`
-	LastIconUpdate     int64                  `json:"lastIconUpdate"`
-	DMChannelID        string                 `json:"dmChannelID"`
-	ChannelAccessLevel llm.ChannelAccessLevel `json:"channelAccessLevel"`
-	ChannelIDs         []string               `json:"channelIDs"`
-	UserAccessLevel    llm.UserAccessLevel    `json:"userAccessLevel"`
-	UserIDs            []string               `json:"userIDs"`
+	ID                    string                 `json:"id"`
+	DisplayName           string                 `json:"displayName"`
+	Username              string                 `json:"username"`
+	LastIconUpdate        int64                  `json:"lastIconUpdate"`
+	DMChannelID           string                 `json:"dmChannelID"`
+	ChannelAccessLevel    llm.ChannelAccessLevel `json:"channelAccessLevel"`
+	ChannelIDs            []string               `json:"channelIDs"`
+	UserAccessLevel       llm.UserAccessLevel    `json:"userAccessLevel"`
+	UserIDs               []string               `json:"userIDs"`
+	EnabledMCPTools       []llm.EnabledMCPTool   `json:"enabledMCPTools"`
+	AutoEnableNewMCPTools bool                   `json:"autoEnableNewMCPTools"`
 }
 
 type AIBotsResponse struct {
@@ -392,15 +435,17 @@ func (a *API) getAIBotsForUser(userID string) ([]AIBotInfo, error) {
 		}
 
 		bots = append(bots, AIBotInfo{
-			ID:                 bot.GetMMBot().UserId,
-			DisplayName:        bot.GetMMBot().DisplayName,
-			Username:           bot.GetMMBot().Username,
-			LastIconUpdate:     bot.GetMMBot().LastIconUpdate,
-			DMChannelID:        dmChannelID,
-			ChannelAccessLevel: bot.GetConfig().ChannelAccessLevel,
-			ChannelIDs:         bot.GetConfig().ChannelIDs,
-			UserAccessLevel:    bot.GetConfig().UserAccessLevel,
-			UserIDs:            bot.GetConfig().UserIDs,
+			ID:                    bot.GetMMBot().UserId,
+			DisplayName:           bot.GetMMBot().DisplayName,
+			Username:              bot.GetMMBot().Username,
+			LastIconUpdate:        bot.GetMMBot().LastIconUpdate,
+			DMChannelID:           dmChannelID,
+			ChannelAccessLevel:    bot.GetConfig().ChannelAccessLevel,
+			ChannelIDs:            bot.GetConfig().ChannelIDs,
+			UserAccessLevel:       bot.GetConfig().UserAccessLevel,
+			UserIDs:               bot.GetConfig().UserIDs,
+			EnabledMCPTools:       bot.GetConfig().EnabledMCPTools,
+			AutoEnableNewMCPTools: bot.GetConfig().AutoEnableNewMCPTools,
 		})
 		if bot.GetMMBot().Username == defaultBotName {
 			bots[0], bots[i] = bots[i], bots[0]
