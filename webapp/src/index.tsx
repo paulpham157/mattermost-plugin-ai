@@ -35,6 +35,7 @@ import SearchButton from './components/search_button';
 import AskChannelButton from './components/ask_channel_button';
 import {doSelectPost} from './hooks';
 import {invalidateConversation} from './hooks/use_conversation';
+import {notifyMCPConnectionUpdated, MCPConnectionEvent} from './hooks/use_mcp_connection_events';
 import {handleAskChannelCommand, handleSummarizeChannelCommand} from './commands';
 import SearchHints from './components/search_hints';
 import {useBotlist} from './bots';
@@ -191,6 +192,14 @@ export default class Plugin {
             'custom_mattermost-ai_conversation_updated',
             (msg: WebSocketMessage<{conversation_id: string}>) => {
                 invalidateConversation(msg.data.conversation_id);
+            },
+        );
+
+        // MCP OAuth connect/disconnect: refresh cached tool lists in open UI.
+        registry.registerWebSocketEventHandler(
+            'custom_mattermost-ai_mcp_connection_updated',
+            (msg: WebSocketMessage<MCPConnectionEvent>) => {
+                notifyMCPConnectionUpdated(msg.data);
             },
         );
 
