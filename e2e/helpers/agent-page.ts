@@ -81,7 +81,7 @@ export class AgentPageHelper {
         const rowScope = this.page.getByText(displayName, { exact: true }).locator(
             'xpath=ancestor::div[.//button[@aria-label="Agent actions"]][1]',
         );
-        await rowScope.getByRole('button', { name: 'Edit' }).click();
+        await rowScope.getByRole('button', { name: 'Edit', exact: true }).click();
     }
 
     /**
@@ -92,15 +92,17 @@ export class AgentPageHelper {
         const rowScope = this.page.getByText(displayName, { exact: true }).locator(
             'xpath=ancestor::div[.//button[@aria-label="Agent actions"]][1]',
         );
-        await rowScope.getByRole('button', { name: 'Delete' }).click();
+        await rowScope.getByRole('button', { name: 'Delete', exact: true }).click();
     }
 
     // --- Config Modal Locators ---
 
     getModal(): Locator {
-        // Modal titles are 'New Agent' (create) or the agent display name (edit)
-        // Look for the modal overlay container
-        return this.page.locator('[class*="ModalOverlay"]')
+        // Agent config and confirmation dialogs now render in AnimatedModalShell and apply
+        // MODAL_SHEET_CLASS (`mmAiModal__sheet`) to the visible dialog panel.
+        // Keep legacy fallbacks for any remaining GenericModal-based surfaces.
+        return this.page.locator('.mmAiModal__sheet')
+            .or(this.page.locator('[class*="ModalOverlay"]'))
             .or(this.page.locator('[class*="modal-content"]'));
     }
 
@@ -181,24 +183,17 @@ export class AgentPageHelper {
         return this.getDeleteDialog().getByRole('button', { name: 'Delete' });
     }
 
+    /** Unsaved-changes confirmation when closing the agent config modal (MM-68452). */
     getDiscardChangesDialog(): Locator {
         return this.page.getByRole('dialog', { name: 'Discard changes?' });
     }
 
-    getDiscardChangesButton(): Locator {
-        return this.getDiscardChangesDialog().getByRole('button', { name: 'Discard changes' });
-    }
-
     getDiscardChangesConfirmButton(): Locator {
-        return this.getDiscardChangesButton();
+        return this.getDiscardChangesDialog().getByRole('button', { name: 'Discard' });
     }
 
-    getKeepEditingButton(): Locator {
+    getDiscardChangesKeepEditingButton(): Locator {
         return this.getDiscardChangesDialog().getByRole('button', { name: 'Keep editing' });
-    }
-
-    getDiscardChangesCancelButton(): Locator {
-        return this.getKeepEditingButton();
     }
 
     // --- MCPs Tab ---

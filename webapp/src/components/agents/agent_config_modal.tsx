@@ -1,7 +1,7 @@
 // Copyright (c) 2023-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import styled from 'styled-components';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {CloseIcon} from '@mattermost/compass-icons/components';
@@ -11,6 +11,7 @@ import {UserAgent, CreateAgentRequest, UpdateAgentRequest, EnabledTool, ServiceI
 import {ChannelAccessLevel, UserAccessLevel} from '@/components/system_console/bot';
 import {PrimaryButton, TertiaryButton} from '@/components/assets/buttons';
 import ConfirmationDialog from '@/components/confirmation_dialog';
+import {AnimatedModalShell, MODAL_SHEET_CLASS} from '@/components/animated_modal_shell';
 
 import ConfigTab from './tabs/config_tab';
 import AccessTab from './tabs/access_tab';
@@ -175,28 +176,33 @@ type Props = {
     onSaved: (agent: UserAgent) => void; // called after successful create or update
 }
 
+const DISCARD_CHANGES_TITLE_ID = 'discard-agent-changes-title';
+const AGENT_CONFIG_TITLE_ID = 'agent-config-modal-title';
+
 const AgentConfigModal = (props: Props) => {
     const {show, mode, agent, services, onClose, onSaved} = props;
     const intl = useIntl();
 
     const [activeTab, setActiveTab] = useState<Tab>('config');
     const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
-    const [initialDraft, setInitialDraft] = useState<AgentDraft>(emptyDraft);
+    const [baselineDraft, setBaselineDraft] = useState<AgentDraft>(emptyDraft);
     const [avatarFile, setAvatarFile] = useState<File | null>(null);
     const [saving, setSaving] = useState(false);
     const [errors, setErrors] = useState<Record<string, string>>({});
-    const [showDiscardChangesDialog, setShowDiscardChangesDialog] = useState(false);
+    const [showDiscardDialog, setShowDiscardDialog] = useState(false);
+    const showDiscardDialogRef = useRef(false);
+    showDiscardDialogRef.current = showDiscardDialog;
 
     // Reset form when modal opens
     useEffect(() => {
         if (show) {
-            const nextDraft = cloneDraft(agent ? agentToDraft(agent) : emptyDraft);
+            const next = agent ? agentToDraft(agent) : cloneDraft(emptyDraft);
             setActiveTab('config');
-            setDraft(nextDraft);
-            setInitialDraft(cloneDraft(nextDraft));
+            setDraft(next);
+            setBaselineDraft(cloneDraft(next));
             setAvatarFile(null);
             setErrors({});
-            setShowDiscardChangesDialog(false);
+            setShowDiscardDialog(false);
         }
     }, [show, agent]);
 
@@ -207,32 +213,50 @@ const AgentConfigModal = (props: Props) => {
         }
     }, [draft.disableTools, activeTab]);
 
-    const hasUnsavedChanges = avatarFile !== null || !draftsEqual(draft, initialDraft);
+    const isDirty = useMemo(
+        () => avatarFile !== null || !draftsEqual(draft, baselineDraft),
+        [draft, baselineDraft, avatarFile],
+    );
 
     const requestClose = useCallback(() => {
-        if (saving || showDiscardChangesDialog) {
+        if (saving) {
             return;
         }
-
-        if (hasUnsavedChanges) {
-            setShowDiscardChangesDialog(true);
+        if (showDiscardDialogRef.current) {
             return;
         }
-
+        if (isDirty) {
+            setShowDiscardDialog(true);
+            return;
+        }
         onClose();
-    }, [saving, showDiscardChangesDialog, hasUnsavedChanges, onClose]);
+    }, [isDirty, onClose, saving]);
 
-    // Escape key to close
+    const handleDiscardConfirm = useCallback(() => {
+        setShowDiscardDialog(false);
+        onClose();
+    }, [onClose]);
+
+    const handleDiscardCancel = useCallback(() => {
+        setShowDiscardDialog(false);
+    }, []);
+
+    // Escape key: same as close — confirm when there are unsaved changes
     useEffect(() => {
         if (!show) {
             return () => {
-                // No keydown listener registered while modal is hidden
+                // No escape listener while modal is hidden.
             };
         }
         const handler = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') {
-                requestClose();
+            if (e.key !== 'Escape') {
+                return;
             }
+            if (showDiscardDialogRef.current) {
+                return;
+            }
+            e.preventDefault();
+            requestClose();
         };
         document.addEventListener('keydown', handler);
         return () => document.removeEventListener('keydown', handler);
@@ -309,127 +333,128 @@ const AgentConfigModal = (props: Props) => {
         }
     }, [mode, agent, draft, avatarFile, intl, onSaved, validate]);
 
-    if (!show) {
-        return null;
-    }
-
-    const title = mode === 'create' ?
-        intl.formatMessage({defaultMessage: 'New Agent'}) :
-        draft.displayName || intl.formatMessage({defaultMessage: 'Edit Agent'});
+    const title = mode === 'create' ? intl.formatMessage({defaultMessage: 'New Agent'}) : draft.displayName || intl.formatMessage({defaultMessage: 'Edit Agent'});
 
     return (
-        <ModalOverlay onClick={requestClose}>
-            <ModalContainer onClick={(e) => e.stopPropagation()}>
-                <ModalHeader>
-                    <ModalTitle>{title}</ModalTitle>
-                    <CloseButton onClick={requestClose}>
-                        <CloseIcon size={20}/>
-                    </CloseButton>
-                </ModalHeader>
+        <>
+            <AnimatedModalShell
+                show={show}
+                onBackdropClick={requestClose}
+                zIndex={2000}
+            >
+                <ModalContainer
+                    className={MODAL_SHEET_CLASS}
+                    onClick={(e) => e.stopPropagation()}
+                    role='dialog'
+                    aria-modal='true'
+                    aria-labelledby={AGENT_CONFIG_TITLE_ID}
+                >
+                    <ModalHeader>
+                        <ModalTitle id={AGENT_CONFIG_TITLE_ID}>{title}</ModalTitle>
+                        <CloseButton
+                            type='button'
+                            onClick={requestClose}
+                            disabled={saving}
+                            aria-label={intl.formatMessage({defaultMessage: 'Close'})}
+                        >
+                            <CloseIcon size={20}/>
+                        </CloseButton>
+                    </ModalHeader>
 
-                <TabsContainer>
-                    <TabButton
-                        $active={activeTab === 'config'}
-                        onClick={() => setActiveTab('config')}
-                    >
-                        <FormattedMessage defaultMessage='Configuration'/>
-                    </TabButton>
-                    <TabButton
-                        $active={activeTab === 'access'}
-                        onClick={() => setActiveTab('access')}
-                    >
-                        <FormattedMessage defaultMessage='Access'/>
-                    </TabButton>
-                    <TabButton
-                        $active={activeTab === 'mcps'}
-                        disabled={draft.disableTools}
-                        title={draft.disableTools ? intl.formatMessage({defaultMessage: 'Enable Tools to configure MCP integrations'}) : ''}
-                        onClick={() => {
-                            if (!draft.disableTools) {
-                                setActiveTab('mcps');
+                    <TabsContainer>
+                        <TabButton
+                            $active={activeTab === 'config'}
+                            onClick={() => setActiveTab('config')}
+                        >
+                            <FormattedMessage defaultMessage='Configuration'/>
+                        </TabButton>
+                        <TabButton
+                            $active={activeTab === 'access'}
+                            onClick={() => setActiveTab('access')}
+                        >
+                            <FormattedMessage defaultMessage='Access'/>
+                        </TabButton>
+                        <TabButton
+                            $active={activeTab === 'mcps'}
+                            disabled={draft.disableTools}
+                            title={draft.disableTools ? intl.formatMessage({defaultMessage: 'Enable Tools to configure MCP integrations'}) : ''}
+                            onClick={() => {
+                                if (!draft.disableTools) {
+                                    setActiveTab('mcps');
+                                }
+                            }}
+                        >
+                            <FormattedMessage defaultMessage='MCPs'/>
+                        </TabButton>
+                    </TabsContainer>
+
+                    <ModalBody>
+                        {errors.general && <ErrorBanner>{errors.general}</ErrorBanner>}
+
+                        {activeTab === 'config' && (
+                            <ConfigTab
+                                draft={draft}
+                                onChange={updateDraft}
+                                onAvatarChange={setAvatarFile}
+                                botUserId={agent?.botUserID}
+                                services={services}
+                                errors={errors}
+                                usernameLocked={mode === 'edit'}
+                            />
+                        )}
+                        {activeTab === 'access' && (
+                            <AccessTab
+                                draft={draft}
+                                onChange={updateDraft}
+                            />
+                        )}
+                        {activeTab === 'mcps' && (
+                            <McpsTab
+                                enabledTools={draft.enabledTools}
+                                autoEnableNewMCPTools={draft.autoEnableNewMCPTools}
+                                onChange={(updates) => updateDraft(updates)}
+                            />
+                        )}
+                    </ModalBody>
+
+                    <ModalFooter>
+                        <CancelButton
+                            type='button'
+                            onClick={requestClose}
+                            disabled={saving}
+                        >
+                            <FormattedMessage defaultMessage='Cancel'/>
+                        </CancelButton>
+                        <SaveButton
+                            onClick={handleSave}
+                            disabled={saving}
+                        >
+                            {saving ? <FormattedMessage defaultMessage='Saving...'/> : <FormattedMessage defaultMessage='Save'/>
                             }
-                        }}
-                    >
-                        <FormattedMessage defaultMessage='MCPs'/>
-                    </TabButton>
-                </TabsContainer>
-
-                <ModalBody>
-                    {errors.general && <ErrorBanner>{errors.general}</ErrorBanner>}
-
-                    {activeTab === 'config' && (
-                        <ConfigTab
-                            draft={draft}
-                            onChange={updateDraft}
-                            onAvatarChange={setAvatarFile}
-                            botUserId={agent?.botUserID}
-                            services={services}
-                            errors={errors}
-                            usernameLocked={mode === 'edit'}
-                        />
-                    )}
-                    {activeTab === 'access' && (
-                        <AccessTab
-                            draft={draft}
-                            onChange={updateDraft}
-                        />
-                    )}
-                    {activeTab === 'mcps' && (
-                        <McpsTab
-                            enabledTools={draft.enabledTools}
-                            autoEnableNewMCPTools={draft.autoEnableNewMCPTools}
-                            onChange={(updates) => updateDraft(updates)}
-                        />
-                    )}
-                </ModalBody>
-
-                <ModalFooter>
-                    <CancelButton onClick={requestClose}>
-                        <FormattedMessage defaultMessage='Cancel'/>
-                    </CancelButton>
-                    <SaveButton
-                        onClick={handleSave}
-                        disabled={saving}
-                    >
-                        {saving ?
-                            <FormattedMessage defaultMessage='Saving...'/> :
-                            <FormattedMessage defaultMessage='Save'/>
-                        }
-                    </SaveButton>
-                </ModalFooter>
-            </ModalContainer>
-            {showDiscardChangesDialog && (
-                <ConfirmationDialog
-                    titleId='discard-agent-changes-dialog-title'
-                    title={<FormattedMessage defaultMessage='Discard changes?'/>}
-                    message={<FormattedMessage defaultMessage='You have unsaved changes. Do you want to keep editing or discard them?'/>}
-                    confirmButtonText={<FormattedMessage defaultMessage='Discard changes'/>}
-                    cancelButtonText={<FormattedMessage defaultMessage='Keep editing'/>}
-                    onConfirm={onClose}
-                    onCancel={() => setShowDiscardChangesDialog(false)}
-                    isDestructive={true}
-                    managedAccessibility={true}
-                    zIndex={2100}
-                />
-            )}
-        </ModalOverlay>
+                        </SaveButton>
+                    </ModalFooter>
+                </ModalContainer>
+            </AnimatedModalShell>
+            <ConfirmationDialog
+                show={showDiscardDialog}
+                titleId={DISCARD_CHANGES_TITLE_ID}
+                title={<FormattedMessage defaultMessage='Discard changes?'/>}
+                message={(
+                    <FormattedMessage defaultMessage='You have unsaved changes. If you close now, those changes will be lost.'/>
+                )}
+                confirmButtonText={<FormattedMessage defaultMessage='Discard'/>}
+                cancelButtonText={<FormattedMessage defaultMessage='Keep editing'/>}
+                onConfirm={handleDiscardConfirm}
+                onCancel={handleDiscardCancel}
+                isDestructive={true}
+                managedAccessibility={true}
+                zIndex={2100}
+            />
+        </>
     );
 };
 
 // --- Styled Components ---
-
-const ModalOverlay = styled.div`
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: rgba(0, 0, 0, 0.64);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 2000;
-`;
 
 // Fixed-height modal keeps the top edge anchored so it doesn't jump around when
 // the active tab or AI Service selection changes how tall the body content is.
@@ -472,15 +497,23 @@ const CloseButton = styled.button`
     align-items: center;
     justify-content: center;
 
-    &:hover {
+    &:hover:not(:disabled) {
         background: rgba(var(--center-channel-color-rgb), 0.08);
+    }
+
+    &:disabled {
+        cursor: not-allowed;
+        opacity: 0.4;
     }
 `;
 
 const TabsContainer = styled.div`
     display: flex;
+    box-sizing: border-box;
+    width: 100%;
+    margin: 16px 0 0;
+    padding: 0 32px;
     border-bottom: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
-    margin: 16px 32px 0;
 `;
 
 const TabButton = styled.button<{$active: boolean}>`
@@ -505,7 +538,7 @@ const TabButton = styled.button<{$active: boolean}>`
     }
 
     &:first-child {
-        padding-left: 0;
+        margin-left: -16px;
     }
 `;
 
