@@ -86,11 +86,12 @@ On web and desktop, start a new chat in the Agents right-hand pane and open the 
 
 > **Note:** The Mattermost mobile apps don't currently support starting MCP OAuth connections from the Agents experience. Use web or desktop to connect OAuth-backed MCP providers.
 
-Available tools in direct messages, and in channels when enabled by your system admin, include:
+Depending on your workspace configuration, available tools in direct messages, and in channels when enabled by your system admin, can include:
 
-- Server search (semantic search across your Mattermost instance)
-- User lookup (find information about Mattermost users)
-- MCP tools (additional tools from MCP servers your admin has enabled for Agents). Tool availability depends on your user permissions, provider connection status, and workspace configuration.
+- Mattermost MCP tools, including tools to search posts and find users in Mattermost, when your system admin has enabled the Mattermost MCP server for Agents
+- MCP tools provided by other configured MCP servers, if enabled
+
+Tool availability depends on your user permissions, provider connection status, and workspace configuration.
 
 Some MCP providers require each user to connect their own account before those tools become available. When that applies, open the **Tools** menu in the Agents pane or RHS, select **Connect** for the provider, and wait for the list to refresh with the newly available tools.
 
