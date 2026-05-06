@@ -504,6 +504,7 @@ func (p *Plugin) OnActivate() error {
 		&p.configuration,
 		p,
 		p,
+		p,
 		p.store,
 		getSearchInitError,
 		customPromptsStore,
