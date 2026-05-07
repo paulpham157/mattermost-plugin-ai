@@ -343,7 +343,7 @@ func (a *API) prepareAgentBridgeCompletion(
 			return nil, llm.CompletionRequest{}, nil, nil, nil, http.StatusBadRequest, errors.New("no eligible tools available for this agent")
 		}
 
-		scopedTools := llm.NewToolStore(nil, false)
+		scopedTools := llm.NewToolStore()
 		for _, name := range allowedToolNames {
 			tool := llmRequest.Context.Tools.GetTool(name)
 			if tool == nil {
@@ -502,12 +502,12 @@ func (a *API) streamLLMResponse(c *gin.Context, bot *bots.Bot, llmRequest llm.Co
 	var err error
 	if shouldExecute != nil {
 		var runResult *toolrunner.ToolRunResult
-		runResult, err = toolrunner.New(bot.LLM()).Run(llmRequest, shouldExecute, nil, opts...)
+		runResult, err = toolrunner.New(bot.LLM()).Run(c.Request.Context(), llmRequest, shouldExecute, nil, opts...)
 		if runResult != nil {
 			streamResult = runResult.Stream
 		}
 	} else {
-		streamResult, err = bot.LLM().ChatCompletion(llmRequest, opts...)
+		streamResult, err = bot.LLM().ChatCompletion(c.Request.Context(), llmRequest, opts...)
 	}
 	if err != nil {
 		// If streaming hasn't started, we can still send a JSON error
@@ -542,14 +542,13 @@ func (a *API) streamLLMResponse(c *gin.Context, bot *bots.Bot, llmRequest llm.Co
 	}
 }
 
-// handleNonStreamingLLMResponse handles non-streaming LLM responses.
 // When shouldExecute is non-nil, the call is routed through a toolrunner so
 // allowlisted tool calls are auto-executed; the runner's text stream is
 // drained into a single concatenated string before responding, mirroring
 // what ChatCompletionNoStream would have produced.
 func (a *API) handleNonStreamingLLMResponse(c *gin.Context, bot *bots.Bot, llmRequest llm.CompletionRequest, shouldExecute func(llm.ToolCall) bool, opts ...llm.LanguageModelOption) {
 	if shouldExecute == nil {
-		response, err := bot.LLM().ChatCompletionNoStream(llmRequest, opts...)
+		response, err := bot.LLM().ChatCompletionNoStream(c.Request.Context(), llmRequest, opts...)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, bridgeclient.ErrorResponse{
 				Error: fmt.Sprintf("failed to complete LLM request: %v", err),
@@ -562,7 +561,7 @@ func (a *API) handleNonStreamingLLMResponse(c *gin.Context, bot *bots.Bot, llmRe
 		return
 	}
 
-	runResult, err := toolrunner.New(bot.LLM()).Run(llmRequest, shouldExecute, nil, opts...)
+	runResult, err := toolrunner.New(bot.LLM()).Run(c.Request.Context(), llmRequest, shouldExecute, nil, opts...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, bridgeclient.ErrorResponse{
 			Error: fmt.Sprintf("failed to complete LLM request: %v", err),
