@@ -65,6 +65,13 @@ type MCPClientManager interface {
 	EnsureMCPSessionID(userID string) (string, error)
 	GetToolsForUser(userID string) ([]llm.Tool, *mcp.Errors)
 	GetConfig() mcp.Config
+
+	RegisterPluginServer(cfg mcp.PluginServerConfig)
+	UnregisterPluginServer(pluginID string)
+	ListPluginServers() []mcp.PluginServerConfig
+	GetPluginServer(pluginID string) (mcp.PluginServerConfig, bool)
+
+	DiscoverPluginServerTools(ctx context.Context, userID string, cfg mcp.PluginServerConfig) ([]mcp.ToolInfo, error)
 }
 
 // ConfigStore provides read/write access to the plugin configuration in the database.
@@ -145,6 +152,15 @@ type API struct {
 	convService           *conversation.Service
 	getSearchInitError    func() string
 	customPromptsStore    *customprompts.Store
+
+	// externalRebuilderForTest must be nil in production; SetExternalRebuilderForTest
+	// is the only supported entry point for tests.
+	externalRebuilderForTest externalServerRebuilder
+}
+
+// SetExternalRebuilderForTest installs a test-only externalServerRebuilder.
+func (a *API) SetExternalRebuilderForTest(rb externalServerRebuilder) {
+	a.externalRebuilderForTest = rb
 }
 
 // New creates a new API instance
@@ -237,6 +253,9 @@ func (a *API) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Reques
 	completionRoute.POST("/agent/:agent/nostream", a.validateAgentParam, a.handleAgentCompletionNoStream)
 	completionRoute.POST("/service/:service", a.handleServiceCompletionStreaming)
 	completionRoute.POST("/service/:service/nostream", a.handleServiceCompletionNoStream)
+
+	llmBridgeRoute.POST("/mcp/register", a.handleMCPRegister)
+	llmBridgeRoute.POST("/mcp/unregister", a.handleMCPUnregister)
 
 	// MCP server endpoints - grouped under /mcp-server/
 	if a.mcpHandlers != nil && a.config.MCP().EnablePluginServer {
@@ -332,6 +351,7 @@ func (a *API) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Reques
 	adminRouter.GET("/mcp/tools", a.handleGetMCPTools)
 	adminRouter.GET("/mcp/vetted-tool-seed", a.handleGetVettedToolSeed)
 	adminRouter.POST("/mcp/tools/cache/clear", a.handleClearMCPToolsCache)
+	adminRouter.PUT("/mcp/plugin-servers/:pluginID", a.handleUpdatePluginServer)
 	adminRouter.POST("/models/fetch", a.handleFetchModels)
 	adminRouter.GET("/config", a.handleGetConfig)
 	adminRouter.PUT("/config", a.handleSaveConfig)
