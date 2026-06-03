@@ -38,6 +38,14 @@ var (
 	LLMBifrostErrorCode     = attribute.Key("agents.llm.bifrost.error_code")
 	LLMBifrostErrorProvider = attribute.Key("agents.llm.bifrost.error_provider")
 	LLMBifrostIsBifrostErr  = attribute.Key("agents.llm.bifrost.is_bifrost_error")
+
+	// Per-source breakdown of agents.llm.input_tokens, derived from the
+	// request and emitted on the LLM-call span. One attribute per source.
+	LLMTokensSystem      = attribute.Key("agents.llm.tokens.system")
+	LLMTokensHistory     = attribute.Key("agents.llm.tokens.history")
+	LLMTokensToolDefs    = attribute.Key("agents.llm.tokens.tool_defs")
+	LLMTokensToolResults = attribute.Key("agents.llm.tokens.tool_results")
+	LLMTokensImages      = attribute.Key("agents.llm.tokens.images")
 )
 
 // Attribute keys for agent context

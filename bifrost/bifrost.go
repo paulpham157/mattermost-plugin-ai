@@ -569,6 +569,25 @@ func setTokenUsageSpanAttributes(span trace.Span, usage llm.TokenUsage) {
 	span.SetAttributes(attrs...)
 }
 
+// setCompositionSpanAttributes attaches per-source token attribution to the
+// span, derived from the request's posts and tools and scaled to the
+// provider's input-token total. One attribute per source.
+func setCompositionSpanAttributes(span trace.Span, request llm.CompletionRequest, usage llm.TokenUsage) {
+	if usage.InputTokens <= 0 {
+		return
+	}
+	inputs := request.Composition()
+	if len(inputs) == 0 {
+		return
+	}
+	composition := llm.ComputeComposition(inputs, int(usage.InputTokens), llm.CompositionTotalProvider)
+	attrs := composition.SpanAttributes()
+	if len(attrs) == 0 {
+		return
+	}
+	span.SetAttributes(attrs...)
+}
+
 func convertChatUsage(u *schemas.BifrostLLMUsage) llm.TokenUsage {
 	if u == nil {
 		return llm.TokenUsage{}
@@ -625,6 +644,17 @@ func (b *LLM) CountTokens(ctx context.Context, request llm.CompletionRequest, op
 	if err != nil {
 		return 0, fmt.Errorf("failed to build count tokens request: %w", err)
 	}
+	// count_tokens shares the messages-endpoint schema but rejects some
+	// params: OpenAI 400s on max_output_tokens, Anthropic 400s on native
+	// server tools (web_search, file_search, code_interpreter). Reasoning
+	// and response-format config don't change the input-token count, so we
+	// keep only the function tool definitions — those DO count, and omitting
+	// them undercounts every tools-enabled bot.
+	if bifrostReq.Params != nil {
+		bifrostReq.Params = &schemas.ResponsesParameters{
+			Tools: functionToolsForCount(bifrostReq.Params.Tools),
+		}
+	}
 
 	bifrostCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, CountTokensTimeout)
 	defer cancel()
@@ -643,6 +673,19 @@ func (b *LLM) CountTokens(ctx context.Context, request llm.CompletionRequest, op
 		return 0, fmt.Errorf("bifrost count tokens returned nil response")
 	}
 	return resp.InputTokens, nil
+}
+
+// functionToolsForCount keeps only function (custom) tool definitions, which
+// contribute to the input-token count, and drops native server tools that the
+// count_tokens endpoint rejects.
+func functionToolsForCount(tools []schemas.ResponsesTool) []schemas.ResponsesTool {
+	var out []schemas.ResponsesTool
+	for _, t := range tools {
+		if t.Type == schemas.ResponsesToolTypeFunction {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // streamChat handles the streaming chat completion.
@@ -843,6 +886,7 @@ func (b *LLM) streamChat(ctx context.Context, request llm.CompletionRequest, cfg
 				usage := convertChatUsage(resp.Usage)
 				if usage.InputTokens > 0 || usage.OutputTokens > 0 {
 					setTokenUsageSpanAttributes(span, usage)
+					setCompositionSpanAttributes(span, request, usage)
 					output <- llm.TextStreamEvent{
 						Type:  llm.EventTypeUsage,
 						Value: usage,
@@ -2037,6 +2081,7 @@ func (b *LLM) streamResponses(ctx context.Context, request llm.CompletionRequest
 					usage := convertResponsesUsage(resp.Response.Usage)
 					if usage.InputTokens > 0 || usage.OutputTokens > 0 {
 						setTokenUsageSpanAttributes(span, usage)
+						setCompositionSpanAttributes(span, request, usage)
 						output <- llm.TextStreamEvent{
 							Type:  llm.EventTypeUsage,
 							Value: usage,
