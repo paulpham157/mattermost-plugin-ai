@@ -534,12 +534,16 @@ func (w *evalStreamLogger) ChatCompletionNoStream(ctx context.Context, request l
 	return w.inner.ChatCompletionNoStream(ctx, request, opts...)
 }
 
-func (w *evalStreamLogger) CountTokens(text string) int {
-	return w.inner.CountTokens(text)
+func (w *evalStreamLogger) CountTokens(ctx context.Context, request llm.CompletionRequest, opts ...llm.LanguageModelOption) (int, error) {
+	return w.inner.CountTokens(ctx, request, opts...)
 }
 
 func (w *evalStreamLogger) InputTokenLimit() int {
 	return w.inner.InputTokenLimit()
+}
+
+func (w *evalStreamLogger) OutputTokenLimit() int {
+	return w.inner.OutputTokenLimit()
 }
 
 // agenticEvalSetup holds the components needed for agentic flow evals.

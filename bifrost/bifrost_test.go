@@ -1418,6 +1418,145 @@ func TestEnvProxyRouting(t *testing.T) {
 	assert.True(t, backendHit.Load(), "request should have reached the backend")
 }
 
+func TestConvertChatUsage(t *testing.T) {
+	tests := []struct {
+		name  string
+		usage *schemas.BifrostLLMUsage
+		want  llm.TokenUsage
+	}{
+		{
+			name:  "nil usage yields zero value",
+			usage: nil,
+			want:  llm.TokenUsage{},
+		},
+		{
+			name: "nil detail and cost pointers stay zero",
+			usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     100,
+				CompletionTokens: 50,
+			},
+			want: llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+		},
+		{
+			name: "fully populated payload carries every field",
+			usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     1200,
+				CompletionTokens: 350,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					CachedReadTokens:  800,
+					CachedWriteTokens: 100,
+				},
+				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+					ReasoningTokens: 64,
+				},
+				Cost: &schemas.BifrostCost{TotalCost: 0.0123},
+			},
+			want: llm.TokenUsage{
+				InputTokens:       1200,
+				OutputTokens:      350,
+				CachedReadTokens:  800,
+				CachedWriteTokens: 100,
+				ReasoningTokens:   64,
+				Cost:              0.0123,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := convertChatUsage(tt.usage)
+			assert.Equal(t, tt.want.InputTokens, got.InputTokens)
+			assert.Equal(t, tt.want.OutputTokens, got.OutputTokens)
+			assert.Equal(t, tt.want.CachedReadTokens, got.CachedReadTokens)
+			assert.Equal(t, tt.want.CachedWriteTokens, got.CachedWriteTokens)
+			assert.Equal(t, tt.want.ReasoningTokens, got.ReasoningTokens)
+			assert.InDelta(t, tt.want.Cost, got.Cost, 1e-9)
+		})
+	}
+}
+
+func TestCountTokensReturnsCount(t *testing.T) {
+	var backendHit atomic.Bool
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendHit.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"input_tokens": 42}`))
+	}))
+	defer backend.Close()
+
+	llmClient, err := New(Config{
+		Provider:         schemas.Anthropic,
+		APIKey:           "test-key",
+		APIURL:           backend.URL,
+		DefaultModel:     "claude-sonnet-4-5",
+		StreamingTimeout: 10 * time.Second,
+	})
+	require.NoError(t, err)
+	defer llmClient.client.Shutdown()
+
+	count, err := llmClient.CountTokens(context.Background(), llm.CompletionRequest{
+		Posts: []llm.Post{{Role: llm.PostRoleUser, Message: "hello world"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 42, count)
+	assert.True(t, backendHit.Load())
+}
+
+func TestCountTokensUnsupportedProvider(t *testing.T) {
+	var backendHit atomic.Bool
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendHit.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	// Mistral doesn't implement count-tokens in Bifrost; it returns the
+	// "unsupported_operation" error synchronously. CountTokens must classify
+	// that as ErrUnsupportedTokenCount without contacting the backend.
+	llmClient, err := New(Config{
+		Provider:         schemas.Mistral,
+		APIKey:           "test-key",
+		APIURL:           backend.URL,
+		DefaultModel:     "mistral-large-latest",
+		StreamingTimeout: 10 * time.Second,
+	})
+	require.NoError(t, err)
+	defer llmClient.client.Shutdown()
+
+	_, err = llmClient.CountTokens(context.Background(), llm.CompletionRequest{
+		Posts: []llm.Post{{Role: llm.PostRoleUser, Message: "hello"}},
+	})
+	require.ErrorIs(t, err, llm.ErrUnsupportedTokenCount)
+	assert.False(t, backendHit.Load(), "unsupported provider must not hit the backend")
+}
+
+func TestCountTokensScrubsAPIKeyFromError(t *testing.T) {
+	const secret = "sk-real-secret-key-do-not-leak" // #nosec G101 -- fixture, not a real credential
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Anthropic-shaped error payload that echoes the configured key.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = fmt.Fprintf(w, `{"type":"error","error":{"type":"authentication_error","message":"invalid key %s"}}`, secret)
+	}))
+	defer backend.Close()
+
+	llmClient, err := New(Config{
+		Provider:         schemas.Anthropic,
+		APIKey:           secret,
+		APIURL:           backend.URL,
+		DefaultModel:     "claude-sonnet-4-5",
+		StreamingTimeout: 10 * time.Second,
+	})
+	require.NoError(t, err)
+	defer llmClient.client.Shutdown()
+
+	_, err = llmClient.CountTokens(context.Background(), llm.CompletionRequest{
+		Posts: []llm.Post{{Role: llm.PostRoleUser, Message: "hello"}},
+	})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), secret, "API key must be redacted from provider error messages")
+}
+
 // newSearchToolStore builds a one-tool store for tool_choice tests.
 func newSearchToolStore() *llm.ToolStore {
 	store := llm.NewToolStore()
