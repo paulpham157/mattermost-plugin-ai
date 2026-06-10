@@ -173,7 +173,7 @@ func (a *API) convertAgentBridgeRequestToInternal(ctx stdcontext.Context, bot *b
 	bridgeContext := llm.NewContext()
 	bridgeContext.RequestingUser = &model.User{Id: req.UserID}
 	if includeTools && a.contextBuilder != nil {
-		a.contextBuilder.WithLLMContextTools(ctx, bot)(bridgeContext)
+		a.contextBuilder.WithLLMContextConcreteTools(ctx, bot)(bridgeContext)
 	}
 
 	resolvedOperation := operation
@@ -697,7 +697,7 @@ func (a *API) handleGetAgentTools(c *gin.Context) {
 	toolContext := llm.NewContext()
 	toolContext.RequestingUser = &model.User{Id: userID}
 	if a.contextBuilder != nil {
-		a.contextBuilder.WithLLMContextTools(c.Request.Context(), bot)(toolContext)
+		a.contextBuilder.WithLLMContextConcreteTools(c.Request.Context(), bot)(toolContext)
 	}
 
 	var tools []bridgeclient.BridgeToolInfo

@@ -181,6 +181,113 @@ func TestGetToolUsesUniqueBareMCPToolName(t *testing.T) {
 	assert.Equal(t, "jira__get_issue", tool.Name)
 }
 
+func TestToolStoreLookupTool(t *testing.T) {
+	tests := []struct {
+		name         string
+		tools        []Tool
+		lookupName   string
+		serverOrigin string
+		want         ToolLookup
+		wantOK       bool
+	}{
+		{
+			name: "exact name returns metadata",
+			tools: []Tool{{
+				Name:         "jira__get_issue",
+				ServerOrigin: "https://mcp.atlassian.com",
+			}},
+			lookupName: "jira__get_issue",
+			want: ToolLookup{
+				Tool:         Tool{Name: "jira__get_issue", ServerOrigin: "https://mcp.atlassian.com"},
+				RuntimeName:  "jira__get_issue",
+				BareName:     "get_issue",
+				ServerOrigin: "https://mcp.atlassian.com",
+			},
+			wantOK: true,
+		},
+		{
+			name: "unique bare name returns namespaced runtime name",
+			tools: []Tool{{
+				Name:         "jira__get_issue",
+				ServerOrigin: "https://mcp.atlassian.com",
+			}},
+			lookupName: "get_issue",
+			want: ToolLookup{
+				Tool:         Tool{Name: "jira__get_issue", ServerOrigin: "https://mcp.atlassian.com"},
+				RuntimeName:  "jira__get_issue",
+				BareName:     "get_issue",
+				ServerOrigin: "https://mcp.atlassian.com",
+			},
+			wantOK: true,
+		},
+		{
+			name: "server origin disambiguates bare name",
+			tools: []Tool{
+				{Name: "jira__search", ServerOrigin: "https://mcp.atlassian.com"},
+				{Name: "github__search", ServerOrigin: "https://api.githubcopilot.com"},
+			},
+			lookupName:   "search",
+			serverOrigin: "https://api.githubcopilot.com",
+			want: ToolLookup{
+				Tool:         Tool{Name: "github__search", ServerOrigin: "https://api.githubcopilot.com"},
+				RuntimeName:  "github__search",
+				BareName:     "search",
+				ServerOrigin: "https://api.githubcopilot.com",
+			},
+			wantOK: true,
+		},
+		{
+			name: "server origin skips exact mismatch",
+			tools: []Tool{
+				{Name: "read_channel", ServerOrigin: "https://remote.example.com"},
+				{Name: "mattermost__read_channel", ServerOrigin: "embedded"},
+			},
+			lookupName:   "read_channel",
+			serverOrigin: "embedded",
+			want: ToolLookup{
+				Tool:         Tool{Name: "mattermost__read_channel", ServerOrigin: "embedded"},
+				RuntimeName:  "mattermost__read_channel",
+				BareName:     "read_channel",
+				ServerOrigin: "embedded",
+			},
+			wantOK: true,
+		},
+		{
+			name: "ambiguous bare name fails without origin",
+			tools: []Tool{
+				{Name: "jira__search", ServerOrigin: "https://mcp.atlassian.com"},
+				{Name: "github__search", ServerOrigin: "https://api.githubcopilot.com"},
+			},
+			lookupName: "search",
+			wantOK:     false,
+		},
+		{
+			name: "namespaced miss does not fall back to bare name",
+			tools: []Tool{{
+				Name:         "github__search",
+				ServerOrigin: "https://api.githubcopilot.com",
+			}},
+			lookupName: "jira__search",
+			wantOK:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewToolStore()
+			store.AddTools(tt.tools)
+
+			got, ok := store.LookupTool(tt.lookupName, tt.serverOrigin)
+
+			require.Equal(t, tt.wantOK, ok)
+			if !tt.wantOK {
+				return
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestToolCall_SanitizeArguments(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -517,6 +624,16 @@ func TestIsBareMCPToolName(t *testing.T) {
 	assert.False(t, IsBareMCPToolName(""))
 }
 
+func TestNormalizeMCPServerOrigin(t *testing.T) {
+	assert.Equal(t, "https://example.com", NormalizeMCPServerOrigin("https://example.com/"))
+	assert.Equal(t, "https://example.com", NormalizeMCPServerOrigin("  https://example.com/  "))
+}
+
+func TestNormalizeMCPServerOrigins(t *testing.T) {
+	assert.Equal(t, []string{"https://example.com", "https://other.example.com"},
+		NormalizeMCPServerOrigins([]string{" https://example.com/ ", "", "https://example.com", "https://other.example.com///"}))
+}
+
 func TestRetainOnlyMCPTools(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -638,6 +755,18 @@ func TestRetainOnlyMCPTools(t *testing.T) {
 				{ServerOrigin: "https://mcp.atlassian.com", ToolName: MCPServerToolWildcard},
 			},
 			wantToolNames: []string{"builtin_search", "jira__get_issue", "jira__create_issue"},
+		},
+		{
+			name: "normalizes server origins before matching",
+			tools: []Tool{
+				{Name: "builtin_search", ServerOrigin: ""},
+				{Name: "jira__get_issue", ServerOrigin: "https://mcp.atlassian.com/"},
+				{Name: "github__search", ServerOrigin: "https://api.githubcopilot.com"},
+			},
+			allowlist: []EnabledMCPTool{
+				{ServerOrigin: " https://mcp.atlassian.com ", ToolName: "get_issue"},
+			},
+			wantToolNames: []string{"builtin_search", "jira__get_issue"},
 		},
 		{
 			name:  "nil ToolStore is safe",
@@ -765,9 +894,30 @@ func TestFilterMCPToolsByAllowlist(t *testing.T) {
 	}
 }
 
+func TestFilterMCPToolsByEnabledAllowlist(t *testing.T) {
+	tools := []Tool{
+		{Name: "builtin_search", ServerOrigin: ""},
+		{Name: "jira__get_issue", ServerOrigin: "https://mcp.atlassian.com/"},
+		{Name: "jira__create_issue", ServerOrigin: "https://mcp.atlassian.com"},
+		{Name: "github__search", ServerOrigin: "https://api.githubcopilot.com"},
+		{Name: "slack_post", ServerOrigin: "https://mcp.slack.com"},
+	}
+	allowlist := []EnabledMCPTool{
+		{ServerOrigin: " https://mcp.atlassian.com ", ToolName: MCPServerToolWildcard},
+		{ServerOrigin: "https://api.githubcopilot.com/", ToolName: "search"},
+	}
+	input := append([]Tool(nil), tools...)
+
+	got := FilterMCPToolsByEnabledAllowlist(tools, allowlist)
+
+	assert.Equal(t, []Tool{tools[0], tools[1], tools[2], tools[3]}, got)
+	assert.Equal(t, input, tools)
+}
+
 func TestToolStoreUnloadedMCPTools(t *testing.T) {
 	var nilStore *ToolStore
 	nilStore.SetUnloadedMCPTools([]Tool{{Name: "jira__get_issue"}})
+	assert.False(t, nilStore.HasUnloadedMCPTools())
 	assert.False(t, nilStore.IsUnloadedMCPTool("jira__get_issue"))
 	_, ok := nilStore.GetUnloadedMCPToolInfo("jira__get_issue")
 	assert.False(t, ok)
@@ -778,14 +928,15 @@ func TestToolStoreUnloadedMCPTools(t *testing.T) {
 		{Name: "", Description: "ignored"},
 	})
 
+	assert.True(t, store.HasUnloadedMCPTools())
 	assert.True(t, store.IsUnloadedMCPTool("jira__get_issue"))
 	info, ok := store.GetUnloadedMCPToolInfo("jira__get_issue")
 	require.True(t, ok)
-	assert.Equal(t, ToolInfo{Name: "jira__get_issue", Description: "Get a Jira issue"}, info)
+	assert.Equal(t, ToolInfo{Name: "jira__get_issue", Description: "Get a Jira issue", ServerOrigin: "https://jira.example.com"}, info)
 	assert.True(t, store.IsUnloadedMCPTool("get_issue"))
 	info, ok = store.GetUnloadedMCPToolInfo("get_issue")
 	require.True(t, ok)
-	assert.Equal(t, ToolInfo{Name: "jira__get_issue", Description: "Get a Jira issue"}, info)
+	assert.Equal(t, ToolInfo{Name: "jira__get_issue", Description: "Get a Jira issue", ServerOrigin: "https://jira.example.com"}, info)
 
 	store.AddTools([]Tool{{Name: "jira__get_issue", Description: "loaded", ServerOrigin: "https://jira.example.com"}})
 	assert.False(t, store.IsUnloadedMCPTool("jira__get_issue"))
@@ -797,6 +948,7 @@ func TestToolStoreUnloadedMCPTools(t *testing.T) {
 	assert.False(t, store.IsUnloadedMCPTool("jira__get_issue"))
 
 	store.SetUnloadedMCPTools(nil)
+	assert.False(t, store.HasUnloadedMCPTools())
 	assert.False(t, store.IsUnloadedMCPTool("github__search"))
 }
 
@@ -862,4 +1014,120 @@ func TestToolStoreLoadMCPToolsNilsEmptiedMap(t *testing.T) {
 	// The only unloaded tool was loaded, so the unloaded set is now empty.
 	assert.False(t, store.IsUnloadedMCPTool("jira__get_issue"))
 	assert.Nil(t, store.LoadMCPTools([]string{"jira__get_issue"}))
+}
+
+func TestRemoveToolsByServerOriginPrunesUnloadedMCPTools(t *testing.T) {
+	store := NewNoTools()
+	store.AddTools([]Tool{{Name: "builtin"}})
+	store.SetUnloadedMCPTools([]Tool{
+		{Name: "jira__get_issue", Description: "Get a Jira issue", ServerOrigin: "https://jira.example.com"},
+		{Name: "github__search", Description: "Search GitHub", ServerOrigin: "https://github.example.com"},
+	})
+
+	store.RemoveToolsByServerOrigin([]string{"https://github.example.com/"})
+
+	assert.True(t, store.IsUnloadedMCPTool("jira__get_issue"))
+	assert.False(t, store.IsUnloadedMCPTool("github__search"))
+	assert.NotNil(t, store.GetTool("builtin"))
+}
+
+func TestEnrichToolCall(t *testing.T) {
+	newStore := func() *ToolStore {
+		store := NewNoTools()
+		store.AddTools([]Tool{
+			{Name: "jira__create_issue", Description: "Create a Jira issue", ServerOrigin: "https://jira.example.com", Schema: map[string]any{"type": "object"}},
+			{Name: "builtin_tool", Description: "A builtin tool", Schema: map[string]any{"type": "string"}},
+		})
+		return store
+	}
+
+	tests := []struct {
+		name string
+		tc   *ToolCall
+		opts EnrichToolCallOptions
+
+		wantDescription string
+		wantServer      string
+		wantBareName    string
+		wantSchema      any
+	}{
+		{
+			name:            "preserves model description when OverwriteDescription is false",
+			tc:              &ToolCall{Name: "jira__create_issue", Description: "model text", ServerOrigin: "https://jira.example.com"},
+			opts:            EnrichToolCallOptions{},
+			wantDescription: "model text",
+			wantServer:      "https://jira.example.com",
+			wantBareName:    "create_issue",
+			wantSchema:      map[string]any{"type": "object"},
+		},
+		{
+			name:            "overwrites description when OverwriteDescription is true",
+			tc:              &ToolCall{Name: "jira__create_issue", Description: "model text", ServerOrigin: "https://jira.example.com"},
+			opts:            EnrichToolCallOptions{OverwriteDescription: true},
+			wantDescription: "Create a Jira issue",
+			wantServer:      "https://jira.example.com",
+			wantBareName:    "create_issue",
+			wantSchema:      map[string]any{"type": "object"},
+		},
+		{
+			name:            "BareNameFallback resolves when primary lookup misses",
+			tc:              &ToolCall{Name: "missing", MCPBareName: "create_issue", ServerOrigin: "https://jira.example.com"},
+			opts:            EnrichToolCallOptions{BareNameFallback: true},
+			wantDescription: "Create a Jira issue",
+			wantServer:      "https://jira.example.com",
+			wantBareName:    "create_issue",
+			wantSchema:      map[string]any{"type": "object"},
+		},
+		{
+			name:            "no fallback when BareNameFallback is false leaves call untouched",
+			tc:              &ToolCall{Name: "missing", MCPBareName: "create_issue", ServerOrigin: "https://jira.example.com"},
+			opts:            EnrichToolCallOptions{},
+			wantDescription: "",
+			wantServer:      "https://jira.example.com",
+			wantBareName:    "create_issue",
+			wantSchema:      nil,
+		},
+		{
+			name:            "populates ServerOrigin from lookup when empty",
+			tc:              &ToolCall{Name: "jira__create_issue"},
+			opts:            EnrichToolCallOptions{},
+			wantDescription: "Create a Jira issue",
+			wantServer:      "https://jira.example.com",
+			wantBareName:    "create_issue",
+			wantSchema:      map[string]any{"type": "object"},
+		},
+		{
+			name:            "leaves MCPBareName empty for a builtin tool",
+			tc:              &ToolCall{Name: "builtin_tool"},
+			opts:            EnrichToolCallOptions{},
+			wantDescription: "A builtin tool",
+			wantServer:      "",
+			wantBareName:    "",
+			wantSchema:      map[string]any{"type": "string"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			EnrichToolCall(tt.tc, newStore(), tt.opts)
+			assert.Equal(t, tt.wantDescription, tt.tc.Description)
+			assert.Equal(t, tt.wantServer, tt.tc.ServerOrigin)
+			assert.Equal(t, tt.wantBareName, tt.tc.MCPBareName)
+			assert.Equal(t, tt.wantSchema, tt.tc.Schema)
+		})
+	}
+}
+
+func TestEnrichToolCallNilSafe(t *testing.T) {
+	store := NewNoTools()
+	store.AddTools([]Tool{{Name: "builtin_tool", Description: "A builtin tool"}})
+
+	// nil tool call is a no-op.
+	EnrichToolCall(nil, store, EnrichToolCallOptions{})
+
+	// nil store leaves the call untouched.
+	tc := ToolCall{Name: "builtin_tool"}
+	EnrichToolCall(&tc, nil, EnrichToolCallOptions{})
+	assert.Empty(t, tc.Description)
+	assert.Nil(t, tc.Schema)
 }

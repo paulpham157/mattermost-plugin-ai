@@ -36,9 +36,6 @@ type Context struct {
 	// User that is making the request
 	RequestingUser *model.User
 
-	// ConversationID identifies the conversation whose context is being built.
-	ConversationID string
-
 	// Bot Specific
 	BotName            string
 	BotUsername        string
@@ -51,20 +48,16 @@ type Context struct {
 	DisabledToolsInfo []ToolInfo // Info about tools that are unavailable in the current context (e.g., DM-only tools in a channel)
 	Parameters        map[string]interface{}
 
+	// ToolCatalog holds request-scoped inputs used while building the tool store.
+	ToolCatalog ToolCatalogContext
 	// ToolRuntime holds non-prompt tool execution state for this turn.
 	ToolRuntime ToolRuntimeContext
 }
 
-// ToolRuntimeContext holds request-scoped tool runtime state that should not be
-// rendered into the prompt.
-type ToolRuntimeContext struct {
+// ToolCatalogContext holds request-scoped tool catalog build inputs.
+type ToolCatalogContext struct {
 	// MCPDynamicToolLoading indicates this context uses strict MCP dynamic loading.
 	MCPDynamicToolLoading bool
-	// MCPDynamicToolTelemetry receives low-cardinality dynamic MCP tool events.
-	MCPDynamicToolTelemetry                 MCPDynamicToolTelemetry
-	MCPDynamicToolSearchUsed                bool
-	MCPDynamicLoadedToolNames               map[string]bool
-	MCPDynamicSearchLoadCallSuccessRecorded map[string]bool
 
 	// DisabledMCPServerOrigins contains per-user disabled MCP server origins that
 	// must be removed before strict registry construction.
@@ -78,6 +71,16 @@ type ToolRuntimeContext struct {
 	// predefined flows. They are selected only from the already-authorized MCP
 	// catalog and are request scoped.
 	PreloadedMCPTools []EnabledMCPTool
+}
+
+// ToolRuntimeContext holds request-scoped tool runtime state that should not be
+// rendered into the prompt.
+type ToolRuntimeContext struct {
+	// MCPDynamicToolTelemetry receives low-cardinality dynamic MCP tool events.
+	MCPDynamicToolTelemetry                 MCPDynamicToolTelemetry
+	MCPDynamicToolSearchUsed                bool
+	MCPDynamicLoadedToolNames               map[string]bool
+	MCPDynamicSearchLoadCallSuccessRecorded map[string]bool
 }
 
 type MCPDynamicToolTelemetry interface {
