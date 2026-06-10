@@ -1332,7 +1332,7 @@ func (e *TestEnvironment) setupMCPWithEligibleTools(t *testing.T, toolNames []st
 			ServerOrigin: server.URL,
 			Description:  name,
 			Schema:       llm.NewJSONSchemaFromStruct[struct{}](),
-			Resolver: func(_ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
+			Resolver: func(_ context.Context, _ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
 				return "ok", nil
 			},
 		}
@@ -1415,7 +1415,7 @@ func TestBridgeGetAgentToolsReturnsEligibleOnly(t *testing.T) {
 					ServerOrigin: server.URL,
 					Description:  "eligible from context",
 					Schema:       llm.NewJSONSchemaFromStruct[struct{}](),
-					Resolver: func(_ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
+					Resolver: func(_ context.Context, _ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
 						return "ok", nil
 					},
 				},
@@ -1424,7 +1424,7 @@ func TestBridgeGetAgentToolsReturnsEligibleOnly(t *testing.T) {
 					ServerOrigin: server.URL,
 					Description:  "should be filtered out",
 					Schema:       llm.NewJSONSchemaFromStruct[struct{}](),
-					Resolver: func(_ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
+					Resolver: func(_ context.Context, _ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
 						return "ok", nil
 					},
 				},
@@ -1478,7 +1478,7 @@ func TestBridgeGetAgentToolsReturnsEmbeddedServerTools(t *testing.T) {
 					ServerOrigin: mcp.EmbeddedClientKey,
 					Description:  "tool from embedded server",
 					Schema:       llm.NewJSONSchemaFromStruct[struct{}](),
-					Resolver: func(_ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
+					Resolver: func(_ context.Context, _ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
 						return "ok", nil
 					},
 				},
@@ -1542,7 +1542,7 @@ func TestBridgeGetAgentToolsSkipsUnreachableEligibleServer(t *testing.T) {
 					ServerOrigin: server.URL,
 					Description:  "eligible from context",
 					Schema:       llm.NewJSONSchemaFromStruct[struct{}](),
-					Resolver: func(_ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
+					Resolver: func(_ context.Context, _ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
 						return "ok", nil
 					},
 				},
@@ -1690,6 +1690,7 @@ func TestPrepareAgentBridgeCompletionAllowedToolsRequiresUserID(t *testing.T) {
 	defer e.Cleanup(t)
 
 	_, _, _, _, _, statusCode, err := e.api.prepareAgentBridgeCompletion(
+		context.Background(),
 		testBotUserID,
 		bridgeclient.CompletionRequest{
 			Posts: []bridgeclient.Post{
@@ -1724,6 +1725,7 @@ func TestPrepareAgentBridgeCompletionToolHooksRequiresPluginID(t *testing.T) {
 	e.setupTestBot(botConfig)
 
 	_, _, _, _, _, statusCode, err := e.api.prepareAgentBridgeCompletion(
+		context.Background(),
 		testBotUserID,
 		bridgeclient.CompletionRequest{
 			Posts: []bridgeclient.Post{
@@ -1783,6 +1785,7 @@ func TestPrepareAgentBridgeCompletionStoresToolHookKeysInMCPMetadata(t *testing.
 	).Return(true, (*model.AppError)(nil)).Once()
 
 	_, llmRequest, _, _, beforeHookKeys, statusCode, err := e.api.prepareAgentBridgeCompletion(
+		context.Background(),
 		testBotUserID,
 		bridgeclient.CompletionRequest{
 			Posts: []bridgeclient.Post{
@@ -1849,6 +1852,7 @@ func TestPrepareAgentBridgeCompletionToolHooksRequiresUserID(t *testing.T) {
 	e.setupTestBot(botConfig)
 
 	_, _, _, _, _, statusCode, err := e.api.prepareAgentBridgeCompletion(
+		context.Background(),
 		testBotUserID,
 		bridgeclient.CompletionRequest{
 			Posts: []bridgeclient.Post{
@@ -1886,6 +1890,7 @@ func TestPrepareAgentBridgeCompletionToolHooksRequiresAllowedTools(t *testing.T)
 	e.setupTestBot(botConfig)
 
 	_, _, _, _, _, statusCode, err := e.api.prepareAgentBridgeCompletion(
+		context.Background(),
 		testBotUserID,
 		bridgeclient.CompletionRequest{
 			Posts: []bridgeclient.Post{
@@ -2010,7 +2015,7 @@ func TestBridgeClientAgentCompletionRejectsBuiltinToolInAllowedTools(t *testing.
 				ServerOrigin: server.URL,
 				Description:  "eligible_tool",
 				Schema:       llm.NewJSONSchemaFromStruct[struct{}](),
-				Resolver: func(_ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
+				Resolver: func(_ context.Context, _ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
 					return "ok", nil
 				},
 			},
@@ -2018,7 +2023,7 @@ func TestBridgeClientAgentCompletionRejectsBuiltinToolInAllowedTools(t *testing.
 				Name:        "builtin_only",
 				Description: "built-in tool with no MCP origin",
 				Schema:      llm.NewJSONSchemaFromStruct[struct{}](),
-				Resolver: func(_ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
+				Resolver: func(_ context.Context, _ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
 					return "ok", nil
 				},
 			},
@@ -2186,7 +2191,7 @@ func TestBridgeGetAgentToolsReturnsEmptyWhenMCPDisabled(t *testing.T) {
 					Name:        "context_only_tool",
 					Description: "should not be bridge-eligible without MCP",
 					Schema:      llm.NewJSONSchemaFromStruct[struct{}](),
-					Resolver: func(_ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
+					Resolver: func(_ context.Context, _ *llm.Context, _ llm.ToolArgumentGetter) (string, error) {
 						return "ok", nil
 					},
 				},

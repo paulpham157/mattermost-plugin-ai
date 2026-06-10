@@ -25,7 +25,7 @@ import (
 // It is the Resolver function that implements the actual functionality.
 //
 // The Schema field should contain a JSONSchema that defines the expected structure of the tool's arguments.
-// The Resolver function receives the conversation context and a way to access the parsed arguments,
+// The Resolver function receives the request context, conversation context, and parsed arguments,
 // and returns either a result that will be passed to the LLM or an error.
 type Tool struct {
 	Name        string
@@ -45,7 +45,7 @@ type Tool struct {
 	CallMetadata map[string]any
 }
 
-type ToolResolver func(context *Context, argsGetter ToolArgumentGetter) (string, error)
+type ToolResolver func(ctx context.Context, llmCtx *Context, argsGetter ToolArgumentGetter) (string, error)
 
 // WithBoundParams creates a new Tool with parameters bound to fixed values.
 // Bound parameters are:
@@ -121,7 +121,7 @@ func wrapResolverWithBoundParams(original ToolResolver, params map[string]interf
 		return original
 	}
 
-	return func(context *Context, argsGetter ToolArgumentGetter) (string, error) {
+	return func(ctx context.Context, llmCtx *Context, argsGetter ToolArgumentGetter) (string, error) {
 		wrappedGetter := func(args any) error {
 			// First unmarshal the original args
 			if err := argsGetter(args); err != nil {
@@ -130,7 +130,7 @@ func wrapResolverWithBoundParams(original ToolResolver, params map[string]interf
 			// Then inject bound params
 			return injectBoundParams(args, params)
 		}
-		return original(context, wrappedGetter)
+		return original(ctx, llmCtx, wrappedGetter)
 	}
 }
 
@@ -235,8 +235,10 @@ type ToolCall struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Arguments   json.RawMessage `json:"arguments"`
+	Schema      any             `json:"schema,omitempty"`
 	Result      string          `json:"result"`
 	Status      ToolCallStatus  `json:"status"`
+	MCPBareName string          `json:"mcp_bare_name,omitempty"`
 
 	// ServerOrigin identifies the MCP server this tool came from (the BaseURL).
 	// Empty for built-in tools. Used for auto-approval decisions.
@@ -318,8 +320,9 @@ type ToolAuthError struct {
 }
 
 type ToolStore struct {
-	tools      map[string]Tool
-	authErrors []ToolAuthError
+	tools            map[string]Tool
+	unloadedMCPTools map[string]ToolInfo
+	authErrors       []ToolAuthError
 }
 
 // NewJSONSchemaFromStruct creates a JSONSchema from a Go struct using generics
@@ -350,7 +353,34 @@ func NewToolStore() *ToolStore {
 func (s *ToolStore) AddTools(tools []Tool) {
 	for _, tool := range tools {
 		s.tools[tool.Name] = tool
+		delete(s.unloadedMCPTools, tool.Name)
 	}
+}
+
+func (s *ToolStore) lookupTool(name string) (Tool, bool) {
+	if s == nil || name == "" {
+		return Tool{}, false
+	}
+	if tool, ok := s.tools[name]; ok {
+		return tool, true
+	}
+	if !IsBareMCPToolName(name) {
+		return Tool{}, false
+	}
+
+	var matched Tool
+	found := false
+	for toolName, tool := range s.tools {
+		if tool.ServerOrigin == "" || BareMCPToolName(toolName) != name {
+			continue
+		}
+		if found {
+			return Tool{}, false
+		}
+		matched = tool
+		found = true
+	}
+	return matched, found
 }
 
 func (s *ToolStore) ResolveTool(ctx context.Context, name string, argsGetter ToolArgumentGetter, llmCtx *Context) (string, error) {
@@ -359,14 +389,14 @@ func (s *ToolStore) ResolveTool(ctx context.Context, name string, argsGetter Too
 	)
 	defer span.End()
 
-	tool, ok := s.tools[name]
+	tool, ok := s.lookupTool(name)
 	if !ok {
 		err := errors.New("unknown tool " + name)
 		span.RecordError(err)
 		span.SetStatus(otelcodes.Error, err.Error())
 		return "", err
 	}
-	result, err := tool.Resolver(llmCtx, argsGetter)
+	result, err := tool.Resolver(ctx, llmCtx, argsGetter)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(otelcodes.Error, err.Error())
@@ -384,16 +414,82 @@ func (s *ToolStore) GetTools() []Tool {
 
 // GetTool returns a pointer to a tool by name, or nil if not found
 func (s *ToolStore) GetTool(name string) *Tool {
-	if tool, ok := s.tools[name]; ok {
+	if tool, ok := s.lookupTool(name); ok {
 		return &tool
 	}
 	return nil
 }
 
+func (s *ToolStore) SetUnloadedMCPTools(tools []Tool) {
+	if s == nil {
+		return
+	}
+	if len(tools) == 0 {
+		s.unloadedMCPTools = nil
+		return
+	}
+
+	s.unloadedMCPTools = make(map[string]ToolInfo, len(tools))
+	for _, tool := range tools {
+		if tool.Name == "" || s.GetTool(tool.Name) != nil {
+			continue
+		}
+		s.unloadedMCPTools[tool.Name] = ToolInfo{
+			Name:        tool.Name,
+			Description: tool.Description,
+		}
+	}
+	if len(s.unloadedMCPTools) == 0 {
+		s.unloadedMCPTools = nil
+	}
+}
+
+func (s *ToolStore) IsUnloadedMCPTool(name string) bool {
+	if s == nil || s.GetTool(name) != nil {
+		return false
+	}
+	_, ok := s.lookupUnloadedMCPTool(name)
+	return ok
+}
+
+func (s *ToolStore) GetUnloadedMCPToolInfo(name string) (ToolInfo, bool) {
+	if s == nil || s.GetTool(name) != nil {
+		return ToolInfo{}, false
+	}
+	return s.lookupUnloadedMCPTool(name)
+}
+
+func (s *ToolStore) lookupUnloadedMCPTool(name string) (ToolInfo, bool) {
+	info, ok := s.unloadedMCPTools[name]
+	if ok {
+		return info, true
+	}
+	if !IsBareMCPToolName(name) {
+		return ToolInfo{}, false
+	}
+
+	var matched ToolInfo
+	found := false
+	for toolName, info := range s.unloadedMCPTools {
+		if BareMCPToolName(toolName) != name {
+			continue
+		}
+		if found {
+			return ToolInfo{}, false
+		}
+		matched = info
+		found = true
+	}
+	if !found {
+		return ToolInfo{}, false
+	}
+	return matched, true
+}
+
 // GetServerOrigin returns the ServerOrigin for a tool by name.
 // Returns empty string if the tool is not found or has no server origin (built-in tools).
 func (s *ToolStore) GetServerOrigin(toolName string) string {
-	if tool, ok := s.tools[toolName]; ok {
+	if tool, ok := s.lookupTool(toolName); ok {
 		return tool.ServerOrigin
 	}
 	return ""
@@ -414,16 +510,25 @@ func (s *ToolStore) KeepToolsIf(keep func(Tool) bool) {
 // RemoveToolsByServerOrigin removes all tools whose ServerOrigin matches
 // any of the provided origins. This is used for user-disabled provider
 // filtering in Copilot DM contexts.
+func normalizeToolServerOrigin(origin string) string {
+	return strings.TrimRight(strings.TrimSpace(origin), "/")
+}
+
 func (s *ToolStore) RemoveToolsByServerOrigin(disabledOrigins []string) {
 	if s == nil || len(disabledOrigins) == 0 {
 		return
 	}
+
 	disabledSet := make(map[string]bool, len(disabledOrigins))
 	for _, origin := range disabledOrigins {
+		origin = normalizeToolServerOrigin(origin)
+		if origin == "" {
+			continue
+		}
 		disabledSet[origin] = true
 	}
 	for name, tool := range s.tools {
-		if disabledSet[tool.ServerOrigin] {
+		if disabledSet[normalizeToolServerOrigin(tool.ServerOrigin)] {
 			delete(s.tools, name)
 		}
 	}
@@ -431,6 +536,72 @@ func (s *ToolStore) RemoveToolsByServerOrigin(disabledOrigins []string) {
 
 // MCPServerToolWildcard in EnabledMCPTool.ToolName means every tool from that ServerOrigin is allowed.
 const MCPServerToolWildcard = "*"
+
+const MCPToolNameSeparator = "__"
+
+func NamespaceMCPToolName(serverSlug, bareToolName string) string {
+	if serverSlug == "" || bareToolName == "" {
+		return bareToolName
+	}
+	return serverSlug + MCPToolNameSeparator + bareToolName
+}
+
+func BareMCPToolName(toolName string) string {
+	_, bareName, ok := strings.Cut(toolName, MCPToolNameSeparator)
+	if !ok {
+		return toolName
+	}
+	return bareName
+}
+
+// IsBareMCPToolName reports whether name is non-empty and has no MCP server
+// namespace prefix (e.g. "get_issue" rather than "jira__get_issue").
+func IsBareMCPToolName(name string) bool {
+	return name != "" && BareMCPToolName(name) == name
+}
+
+func MCPToolNameMatches(runtimeName, configuredName string) bool {
+	return runtimeName == configuredName || BareMCPToolName(runtimeName) == configuredName
+}
+
+// mcpToolAllowed reports whether a tool passes the allowlist filter. Built-in
+// tools (empty ServerOrigin) always pass. MCP tools pass when the allowlist
+// map contains the key for either the namespaced runtime name or the bare
+// name (see BareMCPToolName). Allowlist keys use the format
+// "serverOrigin\x00toolName".
+func mcpToolAllowed(tool Tool, allowlist map[string]bool) bool {
+	if tool.ServerOrigin == "" {
+		return true
+	}
+	if allowlist[tool.ServerOrigin+"\x00"+tool.Name] {
+		return true
+	}
+	return allowlist[tool.ServerOrigin+"\x00"+BareMCPToolName(tool.Name)]
+}
+
+// FilterMCPToolsByAllowlist returns a new slice containing every built-in tool
+// (empty ServerOrigin) plus every MCP tool whose (ServerOrigin, Name) pair is
+// present in the allowlist map. Allowlist keys use the format
+// "serverOrigin\x00toolName"; both the namespaced runtime name and the bare
+// name (see BareMCPToolName) are checked, so persisted allowlists with legacy
+// bare names continue to match.
+//
+// An empty or nil allowlist drops every MCP tool while still keeping built-in
+// tools. The input slice is never mutated. This helper does not interpret
+// MCPServerToolWildcard entries; callers that need wildcard semantics should
+// pre-expand wildcards into the allowlist map before calling.
+func FilterMCPToolsByAllowlist(tools []Tool, allowlist map[string]bool) []Tool {
+	if len(tools) == 0 {
+		return tools
+	}
+	filtered := make([]Tool, 0, len(tools))
+	for _, tool := range tools {
+		if mcpToolAllowed(tool, allowlist) {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
+}
 
 // RetainOnlyMCPTools filters the tool store to only retain MCP tools whose
 // (ServerOrigin, Name) pair appears in the allowlist. Built-in tools (those
@@ -456,17 +627,13 @@ func (s *ToolStore) RetainOnlyMCPTools(allowlist []EnabledMCPTool) {
 	}
 
 	for name, tool := range s.tools {
-		// Never filter built-in tools (empty ServerOrigin)
-		if tool.ServerOrigin == "" {
+		if mcpToolAllowed(tool, allowed) {
 			continue
 		}
 		if wildcardOrigins[tool.ServerOrigin] {
 			continue
 		}
-		// Remove MCP tools not in the allowlist
-		if !allowed[tool.ServerOrigin+"\x00"+tool.Name] {
-			delete(s.tools, name)
-		}
+		delete(s.tools, name)
 	}
 }
 
