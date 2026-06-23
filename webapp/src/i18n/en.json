@@ -59,6 +59,7 @@
   "4wQOb/5v": "Optional: Override the service's default model for this agent. Select from the list or type a custom model name.",
   "5+vsd4fd": "Use Responses API",
   "5EVl/vXb": "{serverName}, {detail}. Press to expand or collapse tools.",
+  "5VFXOyIS": "Refresh tool providers",
   "5W4e6B6D": "Use vendor/model-name format (e.g., openai/gpt-4o). See Scale AI documentation for available models.",
   "5WK7jLmv": "Create new",
   "5YEOQO6f": "Max tool turns",

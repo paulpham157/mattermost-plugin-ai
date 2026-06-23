@@ -119,6 +119,10 @@ type mockMCPClientManager struct {
 	disconnectCalls     []mcpDisconnectCall
 	disconnectErr       error
 	oauthNeededCalls    []mcpDisconnectCall
+	refreshErr          error
+	refreshCalls        []string
+	getContexts         []context.Context
+	refreshContexts     []context.Context
 	ensureSessionErr    error
 
 	registerCalls   []mcp.PluginServerConfig
@@ -185,8 +189,15 @@ func (m *mockMCPClientManager) GetHTTPClient() *http.Client {
 	return nil
 }
 
-func (m *mockMCPClientManager) GetToolsForUser(context.Context, string) ([]llm.Tool, *mcp.Errors) {
+func (m *mockMCPClientManager) GetToolsForUser(ctx context.Context, _ string) ([]llm.Tool, *mcp.Errors) {
+	m.getContexts = append(m.getContexts, ctx)
 	return m.tools, m.mcpErrors
+}
+
+func (m *mockMCPClientManager) RefreshToolsForUser(ctx context.Context, userID string) ([]llm.Tool, *mcp.Errors, error) {
+	m.refreshCalls = append(m.refreshCalls, userID)
+	m.refreshContexts = append(m.refreshContexts, ctx)
+	return m.tools, m.mcpErrors, m.refreshErr
 }
 
 func (m *mockMCPClientManager) GetConfig() mcp.Config {
