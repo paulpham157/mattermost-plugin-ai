@@ -324,6 +324,7 @@ func TestStreamToolFollowUpInteractiveFlag(t *testing.T) {
 			&model.Post{Id: "root-post-id"},
 			conv,
 			true,
+			nil,
 		)
 		require.NoError(t, err)
 		streamingService.waitForStreaming()
@@ -375,6 +376,7 @@ func TestStreamToolFollowUpInteractiveFlag(t *testing.T) {
 			&model.Post{Id: "post-id"},
 			conv,
 			false,
+			nil,
 		)
 		require.NoError(t, err)
 		streamingService.waitForStreaming()

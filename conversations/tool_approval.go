@@ -298,7 +298,7 @@ func (c *Conversations) HandleToolCall(ctx context.Context, userID string, post 
 		return nil
 	}
 
-	return c.streamToolFollowUp(ctx, bot, user, channel, post, conv, isDM)
+	return c.streamToolFollowUp(ctx, bot, user, channel, post, conv, isDM, llmContext)
 }
 
 // resolveInteractionAnswers validates the user's answers for every accepted
@@ -489,7 +489,9 @@ func (c *Conversations) HandleToolResult(ctx context.Context, userID string, pos
 		return fmt.Errorf("unable to get user: %w", err)
 	}
 
-	return c.streamToolFollowUp(ctx, bot, user, channel, post, conv, false)
+	// Channel second-stage follow-up rebuilds a fresh llmContext without in-request
+	// WebSearch data; citation decoration is DM-only via HandleToolCall's llmContext.
+	return c.streamToolFollowUp(ctx, bot, user, channel, post, conv, false, nil)
 }
 
 // streamToolFollowUp rebuilds the completion request from the conversation and
@@ -506,6 +508,7 @@ func (c *Conversations) streamToolFollowUp(
 	post *model.Post,
 	conv *store.Conversation,
 	isDM bool,
+	approvalContext *llm.Context,
 ) error {
 	ctx, span := telemetry.Tracer().Start(ctx, "tool followup completion")
 	defer span.End()
@@ -565,9 +568,11 @@ func (c *Conversations) streamToolFollowUp(
 		return fmt.Errorf("tool runner failed on tool follow-up: %w", err)
 	}
 
+	stream := decorateStreamWithWebSearchAnnotations(runResult.Stream, approvalContext)
+
 	// Stream onto the same post; finalize demotes the prior anchor so
 	// resolved tool cards remain visible alongside the new round.
-	if err := c.streamContinuationToExistingPost(ctx, runResult.Stream, post, user, channel); err != nil {
+	if err := c.streamContinuationToExistingPost(ctx, stream, post, user, channel); err != nil {
 		return fmt.Errorf("failed to stream tool follow-up: %w", err)
 	}
 
