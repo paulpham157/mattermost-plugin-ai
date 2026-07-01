@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mattermost/mattermost-plugin-agents/files"
+	"github.com/mattermost/mattermost-plugin-agents/v2/files"
 )
 
 // FileContentService reads the text contents of Mattermost file attachments on
